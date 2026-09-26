@@ -170,7 +170,8 @@ def main():
             return 0
         print(f'Port {args.port} is used by another application. Launch Studio with --port <unused-port>.',file=sys.stderr)
         return 1
-    print(f'NativeX World Studio: http://127.0.0.1:{args.port}\nXbox: {args.xbox or 'not configured (offline)'} | Ctrl+C stops server',flush=True)
+    console_label = args.xbox or 'not configured (offline)'
+    print(f'NativeX World Studio: http://127.0.0.1:{args.port}\nXbox: {console_label} | Ctrl+C stops server',flush=True)
     if args.open:
         import webbrowser
         threading.Timer(.5,lambda:webbrowser.open(f'http://127.0.0.1:{args.port}')).start()

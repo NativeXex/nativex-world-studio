@@ -49,7 +49,7 @@ class WorldBrowserTests(unittest.TestCase):
             def close(self):pass
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);(root/'data/world-source').mkdir(parents=True)
-            with patch.object(world_job,'ROOT',root),patch.object(world_job,'XBDM',Connection),patch.object(world_job,'progress'):
+            with patch.object(world_job,'ROOT',root),patch.object(world_job,'XBDM',Connection),patch.object(world_job,'progress'),patch('studio.library.local_archive',return_value=None):
                 target=world_job.collect('university','127.0.0.1')
                 self.assertEqual(target.read_bytes(),payload)
                 self.assertFalse(target.with_suffix('.big.part').exists())
