@@ -1,0 +1,19 @@
+{
+  "name": "nativex-world-studio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "python3 -m studio.server",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "description": "Local Skate 3 world browser and experimental layout editor. Bring your own game files.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NativeXex/nativex-world-studio.git"
+  }
+}

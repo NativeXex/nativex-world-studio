@@ -1,0 +1,83 @@
+import * as THREE from 'three';
+import {OrbitControls} from './vendor/OrbitControls.js';
+import {CollisionWorld,Walker} from './walk-core.js';
+import {placementMatrix,transformCollision,testInstances} from './walk-layout.js';
+const $=id=>document.getElementById(id),params=new URLSearchParams(location.search),key=params.get('world')||'blackbox',section=params.get('section'),layout=params.get('layout');
+const say=(text,error=false)=>{$('status').textContent=text;$('status').classList.toggle('error',error);};
+async function get(url){const response=await fetch(url),data=await response.json();if(!response.ok)throw Error(data.error||`Could not read ${url}`);return data;}
+const hash=async bytes=>[...new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))].map(x=>x.toString(16).padStart(2,'0')).join('');
+let source,walker,world,walking=false,picking=false,look=false,previous=0,lastHud=0,token,downloadUrl;
+const notes=[],keys=new Set(),materials=[],collisionMeshes=[],textureCache=new Map();
+const renderer=new THREE.WebGLRenderer({antialias:true});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.setClearColor(0x13202a);renderer.localClippingEnabled=true;renderer.outputColorSpace=THREE.SRGBColorSpace;
+$('view').append(renderer.domElement);renderer.domElement.tabIndex=0;renderer.domElement.setAttribute('aria-label','Collision walkthrough viewport');
+const scene=new THREE.Scene(),camera=new THREE.PerspectiveCamera(60,1,.05,5000),controls=new OrbitControls(camera,renderer.domElement),clip=new THREE.Plane(new THREE.Vector3(0,-1,0),8);
+controls.enableDamping=true;scene.add(new THREE.HemisphereLight(0xddebff,0x687483,2.4));const sun=new THREE.DirectionalLight(0xffeddb,2.1);sun.position.set(30,90,45);scene.add(sun);
+const marker=new THREE.Mesh(new THREE.CylinderGeometry(.35,.35,.035,24),new THREE.MeshBasicMaterial({color:0xffd585,depthTest:false}));marker.renderOrder=10;marker.visible=false;scene.add(marker);
+const contactGeometry=new THREE.BufferGeometry(),contactMesh=new THREE.Mesh(contactGeometry,new THREE.MeshBasicMaterial({color:0xffce70,side:THREE.DoubleSide,transparent:true,opacity:.48,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-3}));contactMesh.visible=false;scene.add(contactMesh);
+const resize=()=>{const w=$('view').clientWidth,h=$('view').clientHeight;renderer.setSize(w,h);camera.aspect=w/h;camera.updateProjectionMatrix();};new ResizeObserver(resize).observe($('view'));
+function overview(){walking=false;look=false;keys.clear();controls.enabled=true;$('walk').textContent='Start walking';$('crosshair').hidden=true;$('mode').textContent='Overview';if(!world)return;const b=world.bounds,size=b.getSize(new THREE.Vector3()),center=b.getCenter(new THREE.Vector3()),distance=Math.max(size.x,size.z,size.y*2,12)*1.25/Math.min(1,camera.aspect);camera.position.copy(center).add(new THREE.Vector3(.4,.85,.8).normalize().multiplyScalar(distance));controls.target.copy(center);camera.lookAt(center);controls.update();$('hud').textContent='Orbit to inspect. Use Place start to choose a collision surface.';}
+function start(){if(!walker?.spawn)throw Error('Choose a clear starting surface first.');picking=false;$('view').classList.remove('picking');walking=true;keys.clear();controls.enabled=false;$('walk').textContent='Pause walking';$('crosshair').hidden=false;$('mode').textContent='Walk · local capsule';camera.position.copy(walker.eye());const q=new THREE.Euler().setFromQuaternion(camera.quaternion,'YXZ');q.x=0;q.z=0;camera.quaternion.setFromEuler(q);renderer.domElement.focus();$('hud').textContent='WASD walk · drag to look · Space jump · R reset · Escape pause';}
+function updateMarker(){if(walker?.spawn){marker.position.copy(walker.spawn).add(new THREE.Vector3(0,.025,0));marker.visible=true;}}
+function record(text,position=walker.feet().toArray()){if(notes.length>=200)throw Error('Save these notes before starting another report.');notes.push({text,position});const li=document.createElement('li');li.textContent=text+' · '+position.map(v=>v.toFixed(2)).join(', ');$('notes').append(li);}
+function action(id,fn){$(id).onclick=async()=>{try{await fn();}catch(e){say(e.message,true);}};}
+action('walk',()=>walking?overview():start());action('overview',overview);action('reset',()=>{walker.reset();updateMarker();say('Returned to the starting position.');});action('pick',()=>{overview();picking=true;$('view').classList.add('picking');$('hud').textContent='Click a floor or ramp in the overview. Placement checks collision and headroom.';});
+action('mark',()=>{const note=$('note').value.trim();if(!note)throw Error('Describe the issue first.');record(note);$('note').value='';say('Position marked in this walk session.');});
+action('save',async()=>{keys.clear();const response=await fetch('/api/walk-reports',{method:'POST',headers:{'Content-Type':'application/json','X-NativeX-Token':token},body:JSON.stringify({world:key,section,layout,archiveSha256:source.archiveSha256,metrics:walker.metrics,notes})}),result=await response.json();if(!response.ok)throw Error(result.error);if(downloadUrl)URL.revokeObjectURL(downloadUrl);downloadUrl=URL.createObjectURL(new Blob([JSON.stringify(result.report,null,2)],{type:'application/json'}));$('download').href=downloadUrl;$('download').hidden=false;say('Walk observations saved: '+result.path);});
+action('loadScope',()=>{const q=new URLSearchParams({world:key});if(layout)q.set('layout',layout);if($('scope').value)q.set('section',$('scope').value);location.href='/walk.html?'+q;});
+$('collision').onchange=()=>collisionMeshes.forEach(m=>m.visible=$('collision').checked);
+$('cutaway').onchange=()=>materials.forEach(m=>{m.clippingPlanes=$('cutaway').checked?[clip]:[];m.needsUpdate=true;});
+renderer.domElement.addEventListener('pointerdown',e=>{
+ if(e.button!==0)return;
+ if(picking){const bounds=renderer.domElement.getBoundingClientRect(),raycaster=new THREE.Raycaster();raycaster.setFromCamera(new THREE.Vector2((e.clientX-bounds.left)/bounds.width*2-1,-(e.clientY-bounds.top)/bounds.height*2+1),camera);let ray=raycaster.ray.clone();if($('cutaway').checked&&ray.origin.y>8&&ray.direction.y<0)ray.origin.copy(ray.at((8-ray.origin.y)/ray.direction.y+.001,new THREE.Vector3()));const hit=world.ray(ray);try{if(!hit)throw Error('No collision surface under that point.');walker.place(hit.point);updateMarker();picking=false;$('view').classList.remove('picking');say('Start placed on decoded collision. Press Start walking.');$('hud').textContent='Start placed. Press Start walking.';}catch(err){say(err.message,true);}return;}
+ if(walking){look=true;renderer.domElement.setPointerCapture(e.pointerId);}
+});
+renderer.domElement.addEventListener('pointerup',()=>look=false);renderer.domElement.addEventListener('pointercancel',()=>look=false);
+renderer.domElement.addEventListener('pointermove',e=>{if(!walking||!look)return;const q=new THREE.Euler().setFromQuaternion(camera.quaternion,'YXZ');q.y-=e.movementX*.003;q.x=THREE.MathUtils.clamp(q.x-e.movementY*.003,-1.45,1.45);camera.quaternion.setFromEuler(q);});
+addEventListener('keydown',e=>{if(['INPUT','TEXTAREA','SELECT','BUTTON'].includes(document.activeElement?.tagName))return;if(e.code==='Escape'){overview();return;}if(!walking)return;if(['KeyW','KeyA','KeyS','KeyD','Space','KeyR','ShiftLeft','ShiftRight'].includes(e.code)){e.preventDefault();keys.add(e.code);}if(e.code==='Space'&&!e.repeat)walker.jump();if(e.code==='KeyR'&&!e.repeat)walker.reset();});
+addEventListener('keyup',e=>keys.delete(e.code));addEventListener('blur',()=>{keys.clear();look=false;walking=false;controls.enabled=true;$('walk').textContent='Resume walking';$('mode').textContent='Paused';});document.addEventListener('visibilitychange',()=>{keys.clear();previous=0;});
+function frame(now){requestAnimationFrame(frame);const dt=previous?(now-previous)/1000:0;previous=now;if(walking&&walker&&!document.hidden){const f=camera.getWorldDirection(new THREE.Vector3());f.y=0;f.normalize();const right=f.clone().cross(new THREE.Vector3(0,1,0));const direction=f.multiplyScalar(Number(keys.has('KeyW'))-Number(keys.has('KeyS'))).addScaledVector(right,Number(keys.has('KeyD'))-Number(keys.has('KeyA')));const event=walker.step(dt,direction,keys.has('ShiftLeft')||keys.has('ShiftRight')?5.2:3.2);if(event?.fell){if(notes.length<200)record('Fell below decoded collision bounds; returned to start',event.position);say('Fall detected. Returned to start; position recorded.',true);}camera.position.copy(walker.eye());}else controls.update();
+ if(walker&&now-lastHud>150){lastHud=now;const p=walker.feet(),m=walker.metrics;$('metrics').textContent=`${m.distance.toFixed(1)} m travelled · ${m.seconds.toFixed(1)} s simulated · ${m.falls} falls · ${m.visitedTriangles} triangles contacted`;$('contact').textContent=`${walker.grounded?'Supported':'Airborne / paused'} · X ${p.x.toFixed(2)}  Y ${p.y.toFixed(2)}  Z ${p.z.toFixed(2)}`+(walker.contact?` · surface ${walker.contact.surface} · triangle ${walker.contact.index}`:'');contactMesh.visible=!!walker.contact&&walking;if(walker.contact){const t=walker.contact.triangle;contactGeometry.setAttribute('position',new THREE.Float32BufferAttribute([...t.a.toArray(),...t.b.toArray(),...t.c.toArray()],3));contactGeometry.computeBoundingSphere();}}
+ renderer.render(scene,camera);
+}requestAnimationFrame(frame);
+const loader=new THREE.TextureLoader();
+async function texture(id,manifest){if(!manifest.textures[id])return null;if(!textureCache.has(id))textureCache.set(id,loader.loadAsync(manifest.textures[id].url).then(t=>{t.colorSpace=THREE.SRGBColorSpace;t.flipY=false;t.wrapS=t.wrapT=THREE.RepeatWrapping;return t;}));return textureCache.get(id);}
+async function main(){
+ if(!/^[a-z0-9-]+$/.test(key))throw Error('Invalid world identity');
+ let manifest=await get(`/worlds/${key}/manifest.nxdata`),plan=null;
+ if(layout){if(!/^[a-f0-9]{64}$/.test(layout))throw Error('Invalid walk snapshot');plan=await get('/api/level-walk-plans/'+layout);if(plan.sourceId!==key)throw Error('Walk snapshot belongs to a different world');}
+ const visible=plan?.instances.filter(o=>o.visible),lookup=new Map(manifest.sections.map(s=>[s.id,s]));
+ const total=visible?visible.reduce((n,o)=>n+lookup.get(o.sectionId).collision.reduce((n,c)=>n+c.triangles,0),0):manifest.summary.collisionTriangles;
+ $('cutaway').checked=key.startsWith('blackbox')||key==='skate2-training-antihero';$('name').textContent=plan?.name??manifest.name;$('back').href='/level.html?world='+key+(layout?'&layout='+layout:'');$('back').textContent=layout?'Return to this layout ↗':'World inspector ↗';document.title=(plan?.name??manifest.name)+' · Collision walk test';
+ const all=document.createElement('option');all.value='';all.textContent=plan?'All visible layout instances':'All sections';all.disabled=total>250000;$('scope').append(all);
+ for(const s of manifest.sections.filter(s=>!visible||visible.some(o=>o.sectionId===s.id))){const option=document.createElement('option');option.value=s.id;option.textContent='Section '+s.id;$('scope').append(option);}
+ $('scope').value=section||'';$('scope').disabled=false;$('loadScope').disabled=false;
+ if(all.disabled&&!section){$('kind').textContent='Choose a section';$('loading').textContent='This layout is large. Choose a section in Test area to inspect its collision.';$('evidence').textContent='Each test loads up to 250,000 collision triangles, including copies. Section tests cover only the selected area.';$('scope').selectedIndex=1;return;}
+ $('loading').textContent='Checking collision against native resource bytes…';
+ source=await get((layout?'/api/walk-layout/'+layout:'/api/walk-source/'+key)+(section?'?section='+encodeURIComponent(section):''));manifest=source.manifest;token=(await get('/api/bootstrap')).token;
+ const edited=source.kind==='edited-layout-preview',instances=testInstances(source),copies=instances.filter(o=>o.origin==='copy').length;
+ $('kind').textContent=edited?'Edited layout · local preview':source.kind==='reopened-skate3-export'?'Exported archive reopened':source.gameBuild.startsWith('skate2')?'Skate 2 source collision':'Original source collision';
+ $('badge').textContent=edited?'Editor arrangement → transformed collision preview':source.kind==='reopened-skate3-export'?'Native export → reopen → decoded collision':'Source archive → decoded collision';
+ $('hash').textContent=(edited?'Layout SHA-256 · '+source.layoutSha256+'\n':'')+'Archive SHA-256 · '+source.archiveSha256;
+ $('evidence').textContent=edited?`${instances.length} section instances · ${copies} ${copies===1?'copy':'copies'} · ${source.renderTriangles.toLocaleString()} render triangles · ${source.collisionTriangles.toLocaleString()} collision triangles. Source collision is freshly verified; this layout’s transforms are applied locally.`:`${source.collisionTriangles.toLocaleString()} triangles · ${source.nativeTreesChecked} native trees checked. Browser collision is compared with a fresh native decode.`;
+ $('limitations').textContent=(edited?'This edited layout has not been exported to a native Xbox archive. ':'')+(source.gameBuild.startsWith('skate2')?'Skate 2 source test. Conversion to Skate 3 is not implemented. ':'Local walk test; Xbox gameplay is unverified. ')+(source.subset?'Selected section and its copies only; surrounding collision is not loaded. ':'')+(source.unsupportedCollision.length?`${source.unsupportedCollision.length} collision resources are unresolved; coverage is incomplete.`:'');
+ world=new CollisionWorld();
+ for(const entry of source.inputs){
+  $('loading').textContent='Loading verified collision · '+entry.section;
+  const r=await fetch(entry.url);if(!r.ok)throw Error('Collision payload unavailable');const bytes=await r.arrayBuffer();if(await hash(bytes)!==entry.sha256)throw Error('Collision payload changed after source verification. Reload the test.');
+  const raw=JSON.parse(new TextDecoder().decode(bytes)),sectionData=lookup.get(entry.section);
+  for(const instance of instances.filter(o=>o.sectionId===entry.section)){
+   const data=transformCollision(raw,instance,sectionData);world.add(data,instance.id+'/'+entry.id);
+   const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.Float32BufferAttribute(data.positions,3));const material=new THREE.MeshBasicMaterial({wireframe:true,color:0x63e2d3,transparent:true,opacity:.5,depthWrite:false,clippingPlanes:$('cutaway').checked?[clip]:[]});materials.push(material);const mesh=new THREE.Mesh(geometry,material);mesh.visible=false;scene.add(mesh);collisionMeshes.push(mesh);
+  }await new Promise(requestAnimationFrame);
+ }
+ $('loading').textContent='Building local collision search…';await new Promise(requestAnimationFrame);world.build();walker=new Walker(world);try{walker.autoPlace();updateMarker();}catch(e){say(e.message,true);}overview();
+ for(const s of manifest.sections.filter(s=>source.sectionIds.includes(s.id))){
+  const template=new THREE.Group();
+  for(const model of s.models){$('loading').textContent='Loading visible geometry · '+s.id;const data=await get(model.url);await Promise.all([...new Set(data.groups.flatMap(g=>g.material.channels.filter(c=>c.role==='diffuse'||c.role==='transparent').map(c=>c.guid)))].map(id=>texture(id,manifest)));
+   for(const g of data.groups){const channel=g.material.channels.find(c=>c.role==='diffuse')||g.material.channels.find(c=>c.role==='transparent'),map=channel?await texture(channel.guid,manifest):null,geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(g.positions,3));geo.setIndex(g.indices);if(g.uv)geo.setAttribute('uv',new THREE.Float32BufferAttribute(g.uv,2));if(g.normals)geo.setAttribute('normal',new THREE.Float32BufferAttribute(g.normals,3));else geo.computeVertexNormals();const mat=new THREE.MeshStandardMaterial({map,color:map?0xffffff:0xb5b8ae,roughness:.93,side:THREE.DoubleSide,alphaTest:.35,clippingPlanes:$('cutaway').checked?[clip]:[]});materials.push(mat);template.add(new THREE.Mesh(geo,mat));}
+  }
+  for(const instance of instances.filter(o=>o.sectionId===s.id)){const group=template.clone(true);group.matrix.copy(placementMatrix(instance,s));group.matrixAutoUpdate=false;scene.add(group);}await new Promise(requestAnimationFrame);
+ }
+ for(const id of ['walk','overview','pick','reset','mark','save'])$(id).disabled=false;$('loading').hidden=true;say(edited?'Ready. This walk includes your moves, rotations and copies, and respects section visibility. Local preview only.':'Ready. Walk the decoded collision or choose a starting surface. No Xbox files have changed.');
+}
+main().catch(e=>{$('loading').textContent=e.message;say(e.message,true);console.error(e);});

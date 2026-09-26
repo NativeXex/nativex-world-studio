@@ -1,0 +1,18 @@
+{
+  "project": "https://github.com/SK8-ENGINE/SK8-Engine",
+  "tree": "311cd40e8a8f2c824586e4485f79d8aee8dcde8b",
+  "files": {
+    "skate3_streams.py": "f4e788ad9bf0f730b42d5caa5db4580889b5555a6ac631b093623d9be95e277f",
+    "retail_collision_mesh.py": "14ff6a03660895744a98d709a2805cc3ec2bc1e2438a73c7c037c4bd55564820",
+    "retail_grind_splines.py": "2433dacb2602a8eb03a883c0ea18ac6c5c8b6c5f240afbcbe41d25f680910f35"
+  },
+  "license": "MIT; original project additions",
+  "notes": "Read-only stream/collision/grind decoders; no upstream PC runtime or custom .skate writer is used.",
+  "localModifications": {
+    "retail_collision_mesh.py": {
+      "date": "2026-09-25",
+      "sha256": "0ab07f947561b1c7ee3f8e76cd32a26866326667c80cccaf2cbb1fe593fd22e8",
+      "change": "Decode compression-mode-1 vertex offsets as unsigned 16-bit values. Signed bases are preserved. Verified against every Black Box vertex bound and all four native KD trees."
+    }
+  }
+}

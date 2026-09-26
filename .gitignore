@@ -1,0 +1,38 @@
+# All user-supplied game data, decoded assets, layouts, reports and local settings
+/data/
+/web/worlds/
+# Game archives, resources, dumps, SDK/toolchain and compiled Xbox files
+*.big
+*.rx2
+*.xst
+*.xsf
+*.xex
+*.iso
+*.god
+*.stfs
+*.bin
+*.dump
+*.dmp
+*.pdb
+*.obj
+*.dll
+*.exe
+*.lib
+*.zip
+*.7z
+# Build/install and machine-local files
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+build/
+dist/
+.env
+.env.*
+!.env.example
+*.local.*
+*.log
+.DS_Store
+._*
+Thumbs.db
